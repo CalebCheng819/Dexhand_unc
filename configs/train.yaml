@@ -27,7 +27,10 @@ training:
   save_dir: '${output_dir}/state_dict'
   save_every_n_epoch: 5000
   val_every_n_epoch: 2500
-
+  ema_decay: 0.995
+  use_ema: true            # 是否启用 EMA
+  use_ema_for_eval: true   # 验证/测试/采样是否用 EMA 模型
+  ema_warmup_steps: 0      # 可选：EMA 线性预热步数，0 表示不用
   lr: 1e-4
   betas: [0.95, 0.999]
   weight_decay: 1e-6

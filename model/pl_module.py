@@ -2,6 +2,7 @@ import os
 import sys
 import numpy as np
 import torch
+import copy
 import pytorch_lightning as pl
 from termcolor import colored
 from torch.nn import functional as F
@@ -21,6 +22,43 @@ class TrainingModule(pl.LightningModule):
         self.cfg = cfg
         self.model = create_model(cfg)
         os.makedirs(cfg.training.save_dir, exist_ok=True)
+        # ===== EMA 开关与参数（带默认值，防止 cfg 不含 train 键时报错）=====
+        self.use_ema          = getattr(cfg.training, "use_ema", True)
+        self.ema_decay_target = getattr(cfg.training, "ema_decay", 0.998)
+        self.use_ema_for_eval = getattr(cfg.training, "use_ema_for_eval", True)
+        self.ema_warmup_steps = getattr(cfg.training, "ema_warmup_steps", 0)
+
+        # ===== 创建 EMA 模型 =====
+        self.ema_model = None
+        if self.use_ema:
+            # 用 deepcopy 确保结构/初值完全一致
+            self.ema_model = copy.deepcopy(self.model)
+            # 影子模型不参与梯度
+            for p in self.ema_model.parameters():
+                p.requires_grad = False
+
+    @torch.no_grad()
+    def _ema_update(self, cur_decay: float):
+        # 1) 同步 BN buffers（running_mean/var 等），保持统计一致
+        for b_ema, b in zip(self.ema_model.buffers(), self.model.buffers()):
+            b_ema.copy_(b)
+
+        # 2) 指数滑动平均更新参数
+        for p_ema, p in zip(self.ema_model.parameters(), self.model.parameters()):
+            p_ema.data.mul_(cur_decay).add_(p.data, alpha=1.0 - cur_decay)
+
+    def _ema_cur_decay(self):
+        """带预热的当前 decay 值。"""
+        if self.ema_warmup_steps and self.global_step < self.ema_warmup_steps:
+            ratio = float(self.global_step) / max(1, self.ema_warmup_steps)
+            return self.ema_decay_target * ratio
+        return self.ema_decay_target
+
+    def on_before_zero_grad(self, optimizer):
+        if self.use_ema and self.ema_model is not None:
+            cur_decay = self._ema_cur_decay()
+            self._ema_update(cur_decay)
+
 
     def ddp_print(self, *args, **kwargs):
         if self.global_rank == 0:
@@ -153,7 +191,8 @@ class TrainingModule(pl.LightningModule):
         self.env.reset()
         while not self.env.is_done:
             obs_seq = self.env.get_obs_seq()
-            action_seq = self.model.get_action(obs_seq)
+            m = self.ema_model if (self.use_ema_for_eval and self.use_ema and self.ema_model is not None) else self.model
+            action_seq = m.get_action(obs_seq)
             self.env.step(action_seq)
         self.eval_results.append(self.env.is_success)
 
