@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
 import torch.nn.functional as F
+import math
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
@@ -13,6 +14,94 @@ sys.path.append(ROOT_DIR)
 from utils.rotation import rot6d_to_matrix
 
 ROT_DIMS = {'joint_value': 1, 'rot_quat': 4, 'rot_6d': 6, 'rot_vec': 3, 'rot_euler': 3}
+
+def R_to_rotvec_torch(R: torch.Tensor, eps: float = 1e-7):
+    # R: (..., 3, 3), 正交矩阵
+    trace = R[..., 0,0] + R[..., 1,1] + R[..., 2,2]
+    cos = ((trace - 1.0) * 0.5).clamp(-1 + eps, 1 - eps)
+    theta = torch.acos(cos)  # (...,)
+
+    # 反对称部分的“vee”
+    vee = torch.stack([
+        R[..., 2,1] - R[..., 1,2],
+        R[..., 0,2] - R[..., 2,0],
+        R[..., 1,0] - R[..., 0,1]
+    ], dim=-1) * 0.5
+
+    # 小角度稳定化：theta / (2*sin theta)
+    small = theta < 1e-3
+    k = torch.empty_like(theta)
+    # 泰勒: 1 + θ^2/6 + 7θ^4/360 ~ θ/(2sinθ)
+    k[small] = 1.0 + (theta[small]**2)/6.0 + 7.0*(theta[small]**4)/360.0
+    k[~small] = theta[~small] / (2.0 * torch.sin(theta[~small]))
+
+    rotvec = k.unsqueeze(-1) * vee
+
+    # 半空间对齐（单帧版，时序请见下节）
+    idx = torch.argmax(rotvec.abs() > 1e-6, dim=-1)  # 找到第一个显著分量
+    gather = torch.gather(rotvec, -1, idx.unsqueeze(-1)).squeeze(-1)
+    sign = torch.where(gather < 0, -1.0, 1.0)
+    rotvec = rotvec * sign.unsqueeze(-1)
+
+    # 裁掉接近 π 的角
+    rot_angle = theta
+    rotvec = rotvec * ((rot_angle.clamp(max=math.pi - 1e-4)) / (rot_angle + 1e-12)).unsqueeze(-1)
+    return rotvec
+
+def rotvec_to_R_torch(rv: torch.Tensor, eps: float = 1e-7):
+    # rv: (..., 3)
+    theta = rv.norm(dim=-1)  # (...)
+    small = theta < 1e-5
+
+    # 归一化轴
+    u = torch.zeros_like(rv)
+    u[~small] = rv[~small] / theta[~small].unsqueeze(-1)
+
+    # 罗德里格公式
+    ct = torch.cos(theta)[..., None, None]
+    st = torch.sin(theta)[..., None, None]
+    # 轴的叉乘矩阵
+    ux, uy, uz = u[..., 0], u[..., 1], u[..., 2]
+    K = torch.stack([
+        torch.stack([torch.zeros_like(ux), -uz, uy], dim=-1),
+        torch.stack([uz, torch.zeros_like(ux), -ux], dim=-1),
+        torch.stack([-uy, ux, torch.zeros_like(ux)], dim=-1),
+    ], dim=-2)
+
+    I = torch.eye(3, device=rv.device, dtype=rv.dtype).expand_as(K)
+    # 小角稳定化：sinθ/θ ~ 1 - θ^2/6，(1 - cosθ)/θ^2 ~ 1/2 - θ^2/24
+    s_by_t = torch.ones_like(theta)
+    one_m_c_by_t2 = 0.5 * torch.ones_like(theta)
+    t2 = theta * theta
+    s_by_t[~small] = torch.sin(theta[~small]) / theta[~small]
+    one_m_c_by_t2[~small] = (1 - torch.cos(theta[~small])) / (t2[~small] + eps)
+
+    s_by_t = s_by_t[..., None, None]
+    one_m_c_by_t2 = one_m_c_by_t2[..., None, None]
+
+    R = I + s_by_t * K + one_m_c_by_t2 * (K @ K)
+    return R
+
+#单帧半空间对齐（数据增强/编码时）
+def halfspace_fix(rv: torch.Tensor, thr: float = 1e-6):
+    # rv: (...,3)
+    idx = torch.argmax(rv.abs() > thr, dim=-1)
+    key = torch.gather(rv, -1, idx.unsqueeze(-1)).squeeze(-1)
+    sign = torch.where(key < 0, -1.0, 1.0)
+    return rv * sign.unsqueeze(-1)
+
+# 时序半空间对齐
+def temporal_sign_align(rv_seq: torch.Tensor, thr: float = 1e-6):
+    # rv_seq: (..., T, 3)
+    out = [halfspace_fix(rv_seq[..., 0, :], thr)]
+    for t in range(1, rv_seq.shape[-2]):
+        cur = halfspace_fix(rv_seq[..., t, :], thr)
+        prev = out[-1]
+        # 若与上一帧夹角>90°，整体取反
+        flip = (torch.sum(prev * cur, dim=-1) < 0).float().unsqueeze(-1)
+        cur = cur * (1 - 2 * flip)
+        out.append(cur)
+    return torch.stack(out, dim=-2)
 
 
 def convert_q(hand_model, q: torch.Tensor, output_q_type):
@@ -53,7 +142,8 @@ def convert_q(hand_model, q: torch.Tensor, output_q_type):
         elif output_q_type == 'rot_6d':
             joint_rot = joint_matrix.mT.reshape(N, 9)[:, :6]
         elif output_q_type == 'rot_vec':
-            joint_rot = torch.from_numpy(joint_rotation.as_rotvec()).to(q.device)  # 用的Π
+            #joint_rot = torch.from_numpy(joint_rotation.as_rotvec()).to(q.device)  # 用的Π
+            joint_rot = R_to_rotvec_torch(joint_matrix)  # (N,3)
         elif output_q_type == 'rot_euler':
             joint_rot = torch.from_numpy(joint_rotation.as_euler('xyz')).to(q.device)
         else:
@@ -173,7 +263,7 @@ def decode_rotations_to_R(rot_tensor, action_type):
     elif action_type == 'rot_quat':
         x = rot_tensor.reshape(B, T, 24, 4);  R = quat_to_R(x)
     elif action_type == 'rot_vec':
-        x = rot_tensor.reshape(B, T, 24, 3);  R = so3_exp(x)
+        x = rot_tensor.reshape(B, T, 24, 3);  R = rotvec_to_R_torch(x)#使用最新的rotvec_to_R_torch
     elif action_type == 'rot_euler':
         x = rot_tensor.reshape(B, T, 24, 3);  R = euler_xyz_to_R(x)
     else:

@@ -15,7 +15,7 @@ sys.path.append(ROOT_DIR)
 
 from utils.hand_model import create_hand_model
 from utils.action_utils import convert_q
-
+from utils.action_utils import temporal_sign_align
 
 rewards_threshold = {
     "D4RL/door/expert-v2": 10,
@@ -66,6 +66,12 @@ class AdroitDataset(Dataset):
             if self.action_type != 'joint_value':
                 q = hand_model.q_control2real(torch.from_numpy(actions[:, -24:]))
                 q = convert_q(hand_model, q, output_q_type=self.action_type).numpy()
+                # 加在这里（仅当 rot_vec 时）：
+                if self.action_type == 'rot_vec':
+                    K = 3
+                    q_t = torch.from_numpy(q).view(-1, 24, K)    # (T, 24, 3)
+                    q_t = temporal_sign_align(q_t)               # 时序对齐
+                    q   = q_t.view(-1, 24*K).numpy()                
                 actions = np.concatenate([actions[:, :-24], q], axis=-1)
 
             episode_truncated = {
