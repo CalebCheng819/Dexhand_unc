@@ -1,0 +1,9 @@
+obs_horizon: 2
+act_horizon: 8
+pred_horizon: 16
+
+diffusion_prediction_type: 'epsilon'  # 'epsilon' or 'sample'
+scheduler_clip_sample: True
+num_diffusion_iters: 100
+diffusion_step_embed_dim: 64
+unet_dims: [128, 256, 512] #[16, 32, 64]

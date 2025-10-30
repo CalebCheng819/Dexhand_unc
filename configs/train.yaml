@@ -1,0 +1,33 @@
+defaults:
+  - log.yaml
+  - model: diffusion_low_dim.yaml
+  - dataset: adroit.yaml
+  - _self_
+
+name: 'fdp_hammer25_rotvec_hybrid_plus'
+
+seed: 42
+gpu:
+#  - 0
+#  - 1
+  - 2
+#  - 3
+#  - 4
+#  - 5
+#  - 6
+#  - 7
+
+load_from_checkpoint: False
+log_every_n_steps: 100
+
+training:
+  total_iters: 100000
+  lambda_geo : 0.1
+  loss_mode: hybrid    # 或 geo_only,mae
+  save_dir: '${output_dir}/state_dict'
+  save_every_n_epoch: 5000
+  val_every_n_epoch: 2500
+
+  lr: 1e-4
+  betas: [0.95, 0.999]
+  weight_decay: 1e-6

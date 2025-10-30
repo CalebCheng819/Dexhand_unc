@@ -1,0 +1,10 @@
+{
+    "urdf_path": {
+        "shadowhand": "robot_urdf/shadowhand/shadow_hand_right_adroit.urdf",
+        "leaphand": "robot_urdf/leaphand/leap_hand_right.urdf"
+    },
+    "removed_links": {
+        "shadowhand": ["forearm", "wrist", "ffknuckle", "mfknuckle", "rfknuckle", "lfknuckle", "thbase"],
+        "leaphand": []
+    }
+}
