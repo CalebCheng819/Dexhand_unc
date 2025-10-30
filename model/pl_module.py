@@ -111,6 +111,7 @@ class TrainingModule(pl.LightningModule):
         
         elif pt == 'sample':
             x0_pred = model_output["pred"]                # (B,T,act_dim) 预测的无噪声动作
+            x0_est = model_output["pred"]
             # 权重：可以设为全1；若也想弱化高噪步，可同样取 sqrt(a_bar)
             #w_t = torch.ones(x0_est.shape[0], device=x0_est.device)         # (B,)
             alphas_cumprod = self.model.noise_scheduler.alphas_cumprod.to(x0_pred.device)
