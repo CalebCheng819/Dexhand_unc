@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 num_demos: 25
-action_type: 'rot_6d'  # ['joint_value', 'rot_quat', 'rot_6d', 'rot_vec', 'rot_euler']
+action_type: 'rot_quat'  # ['joint_value', 'rot_quat', 'rot_6d', 'rot_vec', 'rot_euler']
 obs_horizon: ${model.obs_horizon}
 pred_horizon: ${model.pred_horizon}
 
@@ -11,4 +11,4 @@ batch_size: 128
 num_workers: 0
 drop_last: True
 
-eval_episodes: 50
+eval_episodes: 50     #增加eval数量
