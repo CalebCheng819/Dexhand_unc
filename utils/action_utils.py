@@ -15,6 +15,42 @@ from utils.rotation import rot6d_to_matrix
 
 ROT_DIMS = {'joint_value': 1, 'rot_quat': 4, 'rot_6d': 6, 'rot_vec': 3, 'rot_euler': 3}
 
+
+
+# def R_to_rotvec_torch(R: torch.Tensor, eps: float = 1e-7):
+#     # R: (..., 3, 3), 正交矩阵
+#     trace = R[..., 0,0] + R[..., 1,1] + R[..., 2,2]
+#     cos = ((trace - 1.0) * 0.5).clamp(-1 + eps, 1 - eps)
+#     theta = torch.acos(cos)  # (...,)
+
+#     # 反对称部分的“vee”
+#     vee = torch.stack([
+#         R[..., 2,1] - R[..., 1,2],
+#         R[..., 0,2] - R[..., 2,0],
+#         R[..., 1,0] - R[..., 0,1]
+#     ], dim=-1) * 0.5
+
+#     # 小角度稳定化：theta / (2*sin theta)
+#     small = theta < 1e-3
+#     k = torch.empty_like(theta)
+#     # 泰勒: 1 + θ^2/6 + 7θ^4/360 ~ θ/(2sinθ)
+#     k[small] = 1.0 + (theta[small]**2)/6.0 + 7.0*(theta[small]**4)/360.0
+#     k[~small] = theta[~small] / (2.0 * torch.sin(theta[~small]))
+
+#     rotvec = k.unsqueeze(-1) * vee
+
+#     # 半空间对齐（单帧版，时序请见下节）
+
+#     idx = torch.argmax(rotvec.abs() > 1e-6, dim=-1)  # 找到第一个显著分量
+#     gather = torch.gather(rotvec, -1, idx.unsqueeze(-1)).squeeze(-1)
+#     sign = torch.where(gather < 0, -1.0, 1.0)
+#     rotvec = rotvec * sign.unsqueeze(-1)
+
+#     # 裁掉接近 π 的角
+#     rot_angle = theta
+#     rotvec = rotvec * ((rot_angle.clamp(max=math.pi - 1e-4)) / (rot_angle + 1e-12)).unsqueeze(-1)
+#     return rotvec
+
 def R_to_rotvec_torch(R: torch.Tensor, eps: float = 1e-7):
     # R: (..., 3, 3), 正交矩阵
     trace = R[..., 0,0] + R[..., 1,1] + R[..., 2,2]
@@ -38,6 +74,7 @@ def R_to_rotvec_torch(R: torch.Tensor, eps: float = 1e-7):
     rotvec = k.unsqueeze(-1) * vee
 
     # 半空间对齐（单帧版，时序请见下节）
+    
     idx = torch.argmax(rotvec.abs() > 1e-6, dim=-1)  # 找到第一个显著分量
     gather = torch.gather(rotvec, -1, idx.unsqueeze(-1)).squeeze(-1)
     sign = torch.where(gather < 0, -1.0, 1.0)

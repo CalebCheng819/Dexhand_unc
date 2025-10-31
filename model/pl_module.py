@@ -169,8 +169,9 @@ class TrainingModule(pl.LightningModule):
             L_geo = (theta_per_B * w_t).mean()
             loss = L_main + self.cfg.training.lambda_geo * L_geo
 
-        elif self.cfg.training.loss_mode == 'mae':
+        elif self.cfg.training.loss_mode == 'mse':
             loss=L_main
+            L_geo=theta_per_B.mean()#为了log输出，不参与loss计算
         else:
             raise ValueError(f"Unknown loss_mode: {self.cfg.training.loss_mode}")
         self.log_dict({"L_main": L_main, "L_geo": L_geo, "loss": loss,"theta_per_B": theta_per_B.mean()}, prog_bar=True)

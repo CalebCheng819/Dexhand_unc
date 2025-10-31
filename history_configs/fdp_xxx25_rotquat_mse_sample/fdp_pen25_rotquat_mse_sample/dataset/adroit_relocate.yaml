@@ -1,0 +1,6 @@
+env_name: 'AdroitHandRelocate-v1'
+dataset_name: 'D4RL/relocate/expert-v2'
+obs_dim: 39
+act_dim: 30  # for joint value representation
+env_act_dim: 6  # original act_dim - 24
+max_episode_steps: 200

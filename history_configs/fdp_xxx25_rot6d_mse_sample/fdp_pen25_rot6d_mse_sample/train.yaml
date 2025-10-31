@@ -4,15 +4,15 @@ defaults:
   - dataset: adroit.yaml
   - _self_
 
-name: 'fdp_hammer25_rotvec_hybrid_plus'
+name: 'fdp_pen25_rot6d_mse_epsilon'
 
 seed: 42
 gpu:
 #  - 0
 #  - 1
-  - 2
+#  - 2
 #  - 3
-#  - 4
+  - 4
 #  - 5
 #  - 6
 #  - 7
@@ -21,15 +21,15 @@ load_from_checkpoint: False
 log_every_n_steps: 100
 
 training:
-  total_iters: 100000  #降低总训练次数
+  total_iters: 30000
   lambda_geo : 0.1
-  loss_mode: hybrid    # 或 geo_only,mse
+  loss_mode: mse    # 或 geo_only,mse
   save_dir: '${output_dir}/state_dict'
   save_every_n_epoch: 5000
-  val_every_n_epoch: 2500
+  val_every_n_epoch: 1000
   ema_decay: 0.995
-  use_ema: true            # 是否启用 EMA
-  use_ema_for_eval: true   # 验证/测试/采样是否用 EMA 模型
+  use_ema: False            # 是否启用 EMA
+  use_ema_for_eval: False   # 验证/测试/采样是否用 EMA 模型
   ema_warmup_steps: 0      # 可选：EMA 线性预热步数，0 表示不用
   lr: 1e-4
   betas: [0.95, 0.999]

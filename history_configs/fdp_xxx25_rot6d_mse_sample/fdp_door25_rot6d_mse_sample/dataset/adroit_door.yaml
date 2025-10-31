@@ -1,0 +1,6 @@
+env_name: 'AdroitHandDoor-v1'
+dataset_name: 'D4RL/door/expert-v2'
+obs_dim: 39
+act_dim: 28  # for joint value representation
+env_act_dim: 4  # original act_dim - 24
+max_episode_steps: 200

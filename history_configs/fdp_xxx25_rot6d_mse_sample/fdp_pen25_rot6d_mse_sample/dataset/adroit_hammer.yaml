@@ -1,0 +1,6 @@
+env_name: 'AdroitHandHammer-v1'
+dataset_name: 'D4RL/hammer/expert-v2'
+obs_dim: 46
+act_dim: 26  # for joint value representation
+env_act_dim: 2  # original act_dim - 24
+max_episode_steps: 200

@@ -1,0 +1,6 @@
+env_name: 'AdroitHandPen-v1'
+dataset_name: 'D4RL/pen/expert-v2'
+obs_dim: 45
+act_dim: 24  # for joint value representation
+env_act_dim: 0  # original act_dim - 24
+max_episode_steps: 100
