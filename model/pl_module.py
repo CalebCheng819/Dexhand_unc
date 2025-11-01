@@ -165,6 +165,7 @@ class TrainingModule(pl.LightningModule):
         theta_per_B = (theta_per_B ** 2)
         if self.cfg.training.loss_mode == 'geo_only':
             loss = theta_per_B.mean()
+            L_geo=theta_per_B.mean()
         elif self.cfg.training.loss_mode == 'hybrid':
             L_geo = (theta_per_B * w_t).mean()
             loss = L_main + self.cfg.training.lambda_geo * L_geo

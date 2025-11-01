@@ -4,13 +4,13 @@ defaults:
   - dataset: adroit.yaml
   - _self_
 
-name: 'fdp_pen25_rotquat_mse_sample_ema'
+name: 'fdp_pen25_rot6d_geo_sample_ema'
 
 seed: 42
 gpu:
-#  - 0
+  - 0
 #  - 1
-  - 2
+#  - 2
 #  - 3
 #  - 4
 #  - 5
@@ -23,7 +23,7 @@ log_every_n_steps: 100
 training:
   total_iters: 30000  #降低总训练次数
   lambda_geo : 0.1
-  loss_mode: mse    # 或 geo_only,mse,hybrid
+  loss_mode: geo_only    # 或 geo_only,mse,hybrid
   save_dir: '${output_dir}/state_dict'
   save_every_n_epoch: 5000
   val_every_n_epoch: 1000   #增加eval频率
