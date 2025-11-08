@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 from termcolor import colored
 from torch.nn import functional as F
 from diffusers.optimization import get_scheduler
+from typing import Optional  # 放在文件开头的 import 里
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
@@ -14,6 +15,27 @@ sys.path.append(ROOT_DIR)
 from model.diffusion_policy.diffusion_policy import create_model
 from env.adroit_env import AdroitEnvWrapper
 from utils.action_utils import decode_rotations_to_R
+def Rseq_to_qseq_along_axes(R_seq, hand_model):
+    """
+    R_seq: (B,T,J,3,3)  每个关节的绝对旋转矩阵（或相对到关节本地轴，二者一致时可直接用）
+    return q: (B,T,D)   与 hand_model.pk_chain 的关节顺序一致
+    """
+    B,T,J = R_seq.shape[:3]
+    # rotvec: (B,T,J,3)
+    omega = R_to_rotvec_torch(R_seq.reshape(B*T*J,3,3)).reshape(B,T,J,3)
+
+    # 取出每个关节轴 a_j, 组为 (J,3)，并广播到 (B,T,J,3)
+    axes = torch.stack([hand_model.joint_axes[name] for name in hand_model.joint_orders], dim=0)  # (J,3)
+    axes = axes.to(R_seq.device).unsqueeze(0).unsqueeze(0).expand(B,T,-1,-1)
+
+    # θ_j = <ω_j, a_j>
+    q = (omega * axes).sum(dim=-1)  # (B,T,J)
+
+    # clip to joint limits
+    q_lower, q_upper = hand_model.get_joint_limits()   # (D,), (D,)
+    q = torch.max(q, q_lower.view(1,1,-1))
+    q = torch.min(q, q_upper.view(1,1,-1))
+    return q
 
 
 class TrainingModule(pl.LightningModule):
@@ -36,6 +58,21 @@ class TrainingModule(pl.LightningModule):
             # 影子模型不参与梯度
             for p in self.ema_model.parameters():
                 p.requires_grad = False
+        # ===== 动作统计（用于 smooth 标准化）=====
+        # 如果 only_rot_segment=True，这里注册的是旋转段的维度；先占位，运行时再对齐拷贝
+        D_task = getattr(cfg.model, "act_dim", None)  # 如果你能拿到动作维度，填对更好
+        if D_task is None:
+            D_task = 1  # 先占位，不影响后续 copy_ 覆盖
+        self.register_buffer("act_mean", torch.zeros(D_task))
+        self.register_buffer("act_std",  torch.ones(D_task))
+
+        # 可选：从文件载入统计（离线算好的）
+        stats_path = getattr(cfg.training, "action_stats_path", None)
+        if stats_path and os.path.isfile(stats_path):
+            s = torch.load(stats_path, map_location="cpu")
+            self.act_mean = s["mean"].to(self.act_mean.dtype)
+            self.act_std  = s["std"].clamp_min(1e-6).to(self.act_std.dtype)
+
 
     @torch.no_grad()
     def _ema_update(self, cur_decay: float):
@@ -75,6 +112,65 @@ class TrainingModule(pl.LightningModule):
         if reduction=='mean': return theta.mean()
         if reduction=='sum':  return theta.sum()
         return theta
+
+    def _current_lambda_task(self):
+        """对 lambda_task 做 warmup（线性预热）"""
+        lambda_task = getattr(self.cfg.training, "lambda_task", 0.0)
+        warmup = getattr(self.cfg.training, "lambda_task_warmup_steps", 0)
+        if warmup and self.global_step < warmup:
+            return lambda_task * float(self.global_step) / max(1, warmup)
+        return lambda_task
+
+
+
+    def _select_x_for_task(self, x0_est: torch.Tensor):
+        """根据 only_rot_segment & action_type 切出用于任务损失的动作段"""
+        only_rot = getattr(self.cfg.training.task_loss, "only_rot_segment", False) \
+                   if getattr(self.cfg, "training", None) and getattr(self.cfg.training, "task_loss", None) else False
+        env_dim = getattr(self.cfg.dataset, "env_act_dim", 0)
+        if only_rot and self.model.action_type in {'rot_quat','rot_6d','rot_vec','rot_euler'}:
+            return x0_est[:, :, env_dim:]  # (B,T,D_task)
+        return x0_est  # (B,T,D)
+
+    def _smooth_loss_standardized(
+                self,
+                x_for_task: torch.Tensor,
+                valid_mask: Optional[torch.Tensor] = None
+        ) -> torch.Tensor:
+        """
+        标准化 + 时间平滑（支持可变长 mask）
+        x_for_task: (B, T, D_task)
+        valid_mask: (B, T) 或 None
+        """
+        x = x_for_task
+        # 保证 act_mean/std 与当前维度一致
+        D_task = x.size(-1)
+        if self.act_mean.numel() != D_task:
+            # 维度不一致时，按当前维度重建 buffer（只发生在首次/only_rot 场景）
+            self.act_mean = torch.zeros(D_task, device=x.device)
+            self.act_std  = torch.ones(D_task,  device=x.device)
+        act_mean = self.act_mean.to(x.device)
+        act_std  = self.act_std.clamp_min(1e-6).to(x.device)
+
+        x_norm = (x - act_mean) / act_std
+
+        # T<2 无需平滑
+        if x_norm.size(1) < 2:
+            return x_norm.new_tensor(0.0)
+
+        diff = x_norm[:, 1:] - x_norm[:, :-1]  # (B, T-1, D_task)
+
+        if valid_mask is not None:
+            m = valid_mask.float()
+            if m.size(1) < 2:
+                return x_norm.new_tensor(0.0)
+            m_diff = (m[:, 1:] * m[:, :-1]).unsqueeze(-1)  # (B, T-1, 1)
+            num = ((diff ** 2) * m_diff).sum()
+            den = (m_diff.sum() * diff.size(-1)).clamp_min(1e-8)
+            return num / den
+        else:
+            return (diff ** 2).mean()
+
 
     # 1) 计算逐样本的几何损失（不做 batch 平均）
     # 举例：geodesic_loss_R 返回逐元素角度，我们自己在非 batch 维上 reduce 到 (B,)
@@ -154,7 +250,64 @@ class TrainingModule(pl.LightningModule):
             #w_t = torch.ones(x0_est.shape[0], device=x0_est.device)         # (B,)
             alphas_cumprod = self.model.noise_scheduler.alphas_cumprod.to(x0_pred.device)
             w_t = torch.sqrt(torch.clamp(alphas_cumprod[timesteps], 1e-5, 1-1e-5)).detach()#带权重
+        # === L_task：任务损失 ===
+        # 依赖 x0_est（无噪声预测动作），已经在上面 pt 分支里得到
+        device = self.device
+        L_task = torch.tensor(0.0, device=device)
 
+        # 从配置里读 task 损失类型与权重
+        task_cfg = getattr(self.cfg.training, "task_loss", None)
+        lambda_task = getattr(self.cfg.training, "lambda_task", 0.0)
+
+        if task_cfg is not None and lambda_task > 0:
+            task_type = getattr(task_cfg, "type", "smooth")  # 'smooth' | 'l2' | 'fingertip_pos'
+            # 你是否只对旋转段施加任务损失（可选）
+            only_rot = getattr(task_cfg, "only_rot_segment", False)
+            env_dim = getattr(self.cfg.dataset, "env_act_dim", 0)
+
+            if only_rot and self.model.action_type in {'rot_quat', 'rot_6d', 'rot_vec', 'rot_euler'}:
+                x_for_task = x0_est[:, :, env_dim:]  # 只对旋转部分做任务损失
+            else:
+                x_for_task = x0_est  # 对完整动作做任务损失
+
+            if task_type == "smooth":
+                # 时间平滑：\sum_t ||x_{t} - x_{t-1}||^2
+                # 与扩散兼容性好、实现简单且稳定
+                # diff = x_for_task[:, 1:] - x_for_task[:, :-1]  # (B, T-1, D_task)
+                # L_task = (diff ** 2).mean()
+                # 1) 选择用于任务损失的动作段
+                x_for_task = self._select_x_for_task(x0_est)  # (B,T,D_task)
+
+                # 2) 拿到可变长序列的 mask（如果你的 batch 有这个键）
+                valid_mask = batch.get("valid_mask", None)  # (B,T) or None
+
+                # 3) 标准化 + 平滑（带 mask）
+                L_task = self._smooth_loss_standardized(x_for_task, valid_mask)
+
+            elif task_type == "l2":
+                # 幅值正则：\sum_t ||x_t||^2
+                L_task = (x_for_task ** 2).mean()
+
+            elif task_type == "fingertip_pos":
+                # 需要：batch["tip_goal"] 形状 (B, T, K, 3) 以及一个 FK 函数把 x0_est -> 指尖位置
+                # 注意：若 action_type = joint_value，FK 直接吃关节角最方便；
+                #      若 action_type 为 rot_*，你需要一个 decode + 逆解/近似FK
+                assert "tip_goal" in batch, "使用 fingertip_pos 任务损失需要 batch['tip_goal']"
+                tip_goal = batch["tip_goal"]  # (B, T, K, 3)
+
+                # 根据配置决定取哪个时间段（比如只对 act_horizon 部分做任务）
+                t_start = getattr(task_cfg, "t_start", 0)
+                t_end = getattr(task_cfg, "t_end", x_for_task.shape[1])  # 默认全时段
+                x_slice = x0_est[:, t_start:t_end]  # (B, T', D)
+
+                # 把预测动作映射到指尖位置（你需要实现该函数，见下方 2)）
+                tip_pred = self.forward_kinematics_to_tips(x_slice)  # (B, T', K, 3)
+
+                goal_slice = tip_goal[:, t_start:t_end]
+                L_task = F.mse_loss(tip_pred, goal_slice)
+
+            else:
+                raise ValueError(f"Unknown task_loss.type: {task_type}")
         x0 = batch["actions"]
         env_dim = self.cfg.dataset.env_act_dim
         rot_pred = x0_est[:, :, env_dim:]                  # (B,T,24*rot_dims)
@@ -163,19 +316,21 @@ class TrainingModule(pl.LightningModule):
         R_gt     = decode_rotations_to_R(rot_gt,   self.model.action_type)
         theta_per_B = self.geodesic_angle_per_sample(R_pred, R_gt)  # (B,)
         theta_per_B = (theta_per_B ** 2)
+        lambda_task_cfg = getattr(self.cfg.training, "lambda_task", 0.0)  # 旧变量仍可用于 log
+        lambda_task = self._current_lambda_task()  # ✅ 用 warmup 后的权重
         if self.cfg.training.loss_mode == 'geo_only':
             loss = theta_per_B.mean()
             L_geo=theta_per_B.mean()
         elif self.cfg.training.loss_mode == 'hybrid':
             L_geo = (theta_per_B * w_t).mean()
-            loss = L_main + self.cfg.training.lambda_geo * L_geo
+            loss = L_main + self.cfg.training.lambda_geo * L_geo+lambda_task * L_task
 
         elif self.cfg.training.loss_mode == 'mse':
-            loss=L_main
+            loss=L_main+ lambda_task * L_task
             L_geo=theta_per_B.mean()#为了log输出，不参与loss计算
         else:
             raise ValueError(f"Unknown loss_mode: {self.cfg.training.loss_mode}")
-        self.log_dict({"L_main": L_main, "L_geo": L_geo, "loss": loss,"theta_per_B": theta_per_B.mean()}, prog_bar=True)
+        self.log_dict({"L_main": L_main, "L_geo": L_geo, "loss": loss,"theta_per_B": theta_per_B.mean(),"L_task": L_task.detach(), "lambda_task_now": torch.tensor(lambda_task, device=self.device)}, prog_bar=True)
         return loss
 
     def on_validation_epoch_start(self):

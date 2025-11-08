@@ -95,7 +95,7 @@ def main(cfg):
         check_val_every_n_epoch=cfg.training.val_every_n_epoch,
     )
 
-    train_dataloader, val_dataloader = create_dataloader(cfg.dataset, is_train=True)
+    train_dataloader, val_dataloader = create_dataloader(cfg.dataset, is_train=True,cfg_train=cfg)
 
     training_module = TrainingModule(cfg=cfg)
     training_module.train()

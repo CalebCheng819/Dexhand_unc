@@ -17,6 +17,8 @@ from utils.hand_model import create_hand_model
 from utils.action_utils import convert_q
 from utils.action_utils import temporal_sign_align
 
+from utils.action_utils import absolute_rot_to_relative, ROT_DIMS#把旋转段从 absolute → relative
+
 rewards_threshold = {
     "D4RL/door/expert-v2": 10,
     "D4RL/hammer/expert-v2": 75,
@@ -24,6 +26,14 @@ rewards_threshold = {
     "D4RL/relocate/expert-v2": 20,
 }
 
+def to_numpy(x, dtype=np.float32):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy().astype(dtype, copy=False)
+    if isinstance(x, np.ndarray):
+        # 确保 dtype 一致（不复制时更省内存）
+        return x.astype(dtype, copy=False)
+    # 其他类型（list / tuple）
+    return np.asarray(x, dtype=dtype)
 
 class AdroitDataset(Dataset):
     def __init__(
@@ -34,12 +44,14 @@ class AdroitDataset(Dataset):
         obs_horizon: int,
         pred_horizon: int,
         is_train: bool,
+        action_mode: str,
     ):
         self.dataset_name = dataset_name
         self.is_train = is_train
         self.action_type = action_type
         self.obs_horizon = obs_horizon
         self.pred_horizon = pred_horizon
+        self.action_mode = action_mode
 
         start_time = time.time()
 
@@ -71,8 +83,13 @@ class AdroitDataset(Dataset):
                     K = 3
                     q_t = torch.from_numpy(q).view(-1, 24, K)    # (T, 24, 3)
                     q_t = temporal_sign_align(q_t)               # 时序对齐
-                    q   = q_t.view(-1, 24*K).numpy()                
-                actions = np.concatenate([actions[:, :-24], q], axis=-1)
+                    q   = q_t.view(-1, 24*K).numpy()
+                if self.action_mode == 'relative':  # 新增配置
+                    q_rel = absolute_rot_to_relative(q, self.action_type, J=24)  # (T, 24*dim)
+                    q_np = q_rel.numpy()
+                else:
+                    q_np = to_numpy(q)  # 永远安全
+                actions = np.concatenate([actions[:, :-24], q_np], axis=-1)
 
             episode_truncated = {
                 'id': episode.id,
@@ -112,17 +129,36 @@ class AdroitDataset(Dataset):
 
         obs_seq = episode['observations'][max(0, start):start + self.obs_horizon]  # start + self.obs_horizon is at least 1
         act_seq = episode['actions'][max(0, start):end]
+
+        # 统计 pad 的量
+        pad_before = 0
+        pad_after = 0
         if start < 0:  # pad before the trajectory
+            pad_before = -start
             obs_seq = np.concatenate([np.tile(obs_seq[0], (-start, 1)), obs_seq], axis=0)
             act_seq = np.concatenate([np.tile(act_seq[0], (-start, 1)), act_seq], axis=0)
         if end > episode_len:  # pad after the trajectory
+            pad_after = end - episode_len
             act_seq = np.concatenate([act_seq, np.tile(act_seq[-1], (end - episode_len, 1))], axis=0)
         assert obs_seq.shape[0] == self.obs_horizon, f"obs_seq.shape[0] ({obs_seq.shape[0]} != obs_horizon ({self.obs_horizon}))"
         assert act_seq.shape[0] == self.pred_horizon, f"act_seq.shape[0] ({act_seq.shape[0]} != pred_horizon ({self.pred_horizon}))"
         assert len(obs_seq.shape) == len(act_seq.shape) == 2
+
+        # === 新增：构造 valid_mask（真实帧=1，pad帧=0）===
+        # 对 actions 的 pred_horizon 序列：前 pad_before 个是0，中间真实段是1，后 pad_after 个是0
+        valid_mask = np.ones((self.pred_horizon,), dtype=np.float32)
+        if pad_before > 0:
+            valid_mask[:pad_before] = 0.0
+        if pad_after > 0:
+            valid_mask[-pad_after:] = 0.0
+
+        # 也可同时返回 seq_len（真实帧数），有需要再用
+        seq_len = self.pred_horizon - pad_before - pad_after
         return {
             'observations': torch.from_numpy(obs_seq),
             'actions': torch.from_numpy(act_seq),
+            'valid_mask': torch.from_numpy(valid_mask),  # ✅ 新增
+            'seq_lens': torch.tensor(seq_len, dtype=torch.long),  # 可选
         }
 
     def __len__(self):
@@ -141,7 +177,7 @@ class ValDataset(Dataset):
         return self.eval_episodes
 
 
-def create_dataloader(cfg, is_train):
+def create_dataloader(cfg, is_train,cfg_train):
     train_dataset = AdroitDataset(
         dataset_name=cfg.dataset_name,
         num_demos=cfg.num_demos,
@@ -149,6 +185,7 @@ def create_dataloader(cfg, is_train):
         obs_horizon=cfg.obs_horizon,
         pred_horizon=cfg.pred_horizon,
         is_train=is_train,
+        action_mode=cfg_train.training.action_mode,
     )
     train_dataloader = DataLoader(
         train_dataset,
