@@ -69,6 +69,7 @@ class AdroitDataset(Dataset):
 
         hand_model = create_hand_model('shadowhand', device='cpu')
         total_transitions = 0
+        tip_pos = None  #  先给个默认值，保证总是已定义
         for episode_idx, episode in tqdm(enumerate(episodes_origin), total=len(episodes_origin), desc="Processing episodes"):
             success_idx_list = np.where(episode.infos['success'])[0]
             assert len(success_idx_list), f"This episode should be filtered out! Reward: {episode.rewards.mean():.2f}"
@@ -76,7 +77,29 @@ class AdroitDataset(Dataset):
 
             actions = episode.actions[:episode_len].astype(np.float32)
             if self.action_type != 'joint_value':
-                q = hand_model.q_control2real(torch.from_numpy(actions[:, -24:]))
+                q = hand_model.q_control2real(torch.from_numpy(actions[:, -24:]))#这一步输出仍为关节角，可以作为FK的入口
+                tip_links = ["fftip", "mftip", "rftip", "lftip", "thtip"]
+                K = len(tip_links)
+                with torch.no_grad():
+                    # 1) 取这一集的控制→真实关节角
+                    q_control = torch.from_numpy(episode.actions[:episode_len, -24:])  # (T,24) control
+                    q_real = hand_model.q_control2real(q_control.to(hand_model.device))  # (T,24) real joint
+
+                    tip_pos_list = []
+                    for t in range(episode_len):
+                        # q_t: (1,24) → update_status 会给每个 link 一个 4x4 变换矩阵
+                        q_t = q_real[t].unsqueeze(0)
+                        hand_model.update_status(q_t)
+
+                        pos_t = []
+                        for link_name in tip_links:
+                            # frame_status[link_name].get_matrix(): (1,4,4)
+                            T_link = hand_model.frame_status[link_name].get_matrix()[0]  # (4,4)
+                            xyz = T_link[:3, 3]  # 取平移向量 (3,)
+                            pos_t.append(xyz.cpu().numpy())
+                        tip_pos_list.append(np.stack(pos_t, axis=0))  # (K,3)
+
+                    tip_pos = np.stack(tip_pos_list, axis=0).astype(np.float32)  # (T,K,3)
                 q = convert_q(hand_model, q, output_q_type=self.action_type).numpy()
                 # 加在这里（仅当 rot_vec 时）：
                 if self.action_type == 'rot_vec':
@@ -96,6 +119,7 @@ class AdroitDataset(Dataset):
                 'total_steps': episode_len,
                 'observations': episode.observations[:episode_len].astype(np.float32),
                 'actions': actions,
+                'tip_pos': tip_pos,  #  新增：GT 指尖位置 (T,K,3)
                 'rewards': episode.rewards[:episode_len].astype(np.float32),
                 'terminations': episode.terminations[:episode_len],  # ndarray, dtype bool
                 'truncations': episode.truncations[:episode_len],  # ndarray, dtype bool
@@ -129,7 +153,12 @@ class AdroitDataset(Dataset):
 
         obs_seq = episode['observations'][max(0, start):start + self.obs_horizon]  # start + self.obs_horizon is at least 1
         act_seq = episode['actions'][max(0, start):end]
-
+        # tip_seq = episode['tip_pos'][max(0, start):end]  # (T_slice, K,3)
+        # 安全处理 tip_pos
+        tip_seq = None
+        if 'tip_pos' in episode and episode['tip_pos'] is not None:
+            tp = episode['tip_pos']
+            tip_seq = tp[max(0, start):end]  # (T_slice, K, 3)
         # 统计 pad 的量
         pad_before = 0
         pad_after = 0
@@ -137,12 +166,18 @@ class AdroitDataset(Dataset):
             pad_before = -start
             obs_seq = np.concatenate([np.tile(obs_seq[0], (-start, 1)), obs_seq], axis=0)
             act_seq = np.concatenate([np.tile(act_seq[0], (-start, 1)), act_seq], axis=0)
+            if 'tip_pos' in episode and episode['tip_pos'] is not None:
+                tip_seq = np.concatenate([np.tile(tip_seq[0:1], (-start, 1, 1)), tip_seq], axis=0)
         if end > episode_len:  # pad after the trajectory
             pad_after = end - episode_len
             act_seq = np.concatenate([act_seq, np.tile(act_seq[-1], (end - episode_len, 1))], axis=0)
+            if 'tip_pos' in episode and episode['tip_pos'] is not None:
+                tip_seq = np.concatenate([tip_seq, np.tile(tip_seq[-1:], (pad_after, 1, 1))], axis=0)
         assert obs_seq.shape[0] == self.obs_horizon, f"obs_seq.shape[0] ({obs_seq.shape[0]} != obs_horizon ({self.obs_horizon}))"
         assert act_seq.shape[0] == self.pred_horizon, f"act_seq.shape[0] ({act_seq.shape[0]} != pred_horizon ({self.pred_horizon}))"
         assert len(obs_seq.shape) == len(act_seq.shape) == 2
+        if 'tip_pos' in episode and episode['tip_pos'] is not None:
+            assert tip_seq.shape[0] == self.pred_horizon
 
         # === 新增：构造 valid_mask（真实帧=1，pad帧=0）===
         # 对 actions 的 pred_horizon 序列：前 pad_before 个是0，中间真实段是1，后 pad_after 个是0
@@ -154,12 +189,18 @@ class AdroitDataset(Dataset):
 
         # 也可同时返回 seq_len（真实帧数），有需要再用
         seq_len = self.pred_horizon - pad_before - pad_after
-        return {
+        sample= {
             'observations': torch.from_numpy(obs_seq),
             'actions': torch.from_numpy(act_seq),
             'valid_mask': torch.from_numpy(valid_mask),  # ✅ 新增
             'seq_lens': torch.tensor(seq_len, dtype=torch.long),  # 可选
+
         }
+        # 只有在有 tip_seq 时才加到 sample 里
+        if tip_seq is not None:
+            sample['tip_pos'] = tip_seq
+
+        return sample
 
     def __len__(self):
         return len(self.slices)

@@ -29,6 +29,8 @@ class HandModel:
         self.link2joint_map = self.get_link2joint_map()  # child link name -> joint name
         self.joint_layers = self.get_joint_layers()  # list of list of joint names in each layer
         self.frame_status = None
+        #  新增：指尖 link 名单
+        self.tip_links = meta_data.get("tip_links", {}).get(robot_name, [])
 
     def update_status(self, q):
         self.frame_status = self.pk_chain.forward_kinematics(q.to(self.device))
@@ -162,6 +164,26 @@ class HandModel:
         q_lower, q_upper = self.get_joint_limits()
         q_control = 2 * (q_real - q_lower) / (q_upper - q_lower) - 1
         return q_control
+#新增用于计算末端位姿的函数
+    def compute_tip_positions(self, q: torch.Tensor, tip_links=None) -> torch.Tensor:
+        """
+        q: (N, J) 真实关节角（弧度）
+        返回: (N, K, 3)，K = len(tip_links)
+        """
+        if tip_links is None:
+            tip_links = self.tip_links
+
+        # 更新一次 FK，frame_status[link] 会是一个批量 frame
+        self.update_status(q)  # pk_chain.forward_kinematics(q)
+
+        positions = []
+        for link_name in tip_links:
+            T_link = self.frame_status[link_name].get_matrix()  # (N,4,4)
+            pos = T_link[:, :3, 3]  # (N,3)
+            positions.append(pos)
+
+        tips = torch.stack(positions, dim=1)  # (N,K,3)
+        return tips
 
 
 def create_hand_model(robot_name, device):

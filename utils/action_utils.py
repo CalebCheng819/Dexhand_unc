@@ -13,7 +13,7 @@ sys.path.append(ROOT_DIR)
 
 from utils.rotation import rot6d_to_matrix
 
-ROT_DIMS = {'joint_value': 1, 'rot_quat': 4, 'rot_6d': 6, 'rot_vec': 3, 'rot_euler': 3}
+ROT_DIMS = {'joint_value': 1, 'rot_quat': 4, 'rot_6d': 6, 'rot_vec': 3, 'rot_euler': 3,"rot_mat": 9}
 
 
 # 绝对→相对：给 (T, J*dim) 的旋转段，转相对
@@ -79,6 +79,44 @@ ROT_DIMS = {'joint_value': 1, 'rot_quat': 4, 'rot_6d': 6, 'rot_vec': 3, 'rot_eul
 #     rel = torch.cat([I_rep_1, rel], dim=0)  # (T,J,dim)
 #
 #     return rel.reshape(T, J * dim)
+#做一个svd处理，保证预测出来的合法
+def project_to_rotmat(R_in: torch.Tensor):
+    """
+    将网络预测的矩阵投影到 SO(3)
+    输入:
+        R_in: (B, T, 9) 或 (B, T, 3, 3)
+    输出:
+        R_out: (B, T, 3, 3)
+    """
+
+    # 保证变成 (B,T,3,3)
+    if R_in.ndim == 3:      # (B,T,9)
+        B, T, _ = R_in.shape
+        R = R_in.reshape(B, T, 3, 3)
+    elif R_in.ndim == 4:    # (B,T,3,3)
+        R = R_in
+        B, T, _, _ = R.shape
+    else:
+        raise ValueError(f"Unexpected R shape: {R_in.shape}")
+
+    # 做 batched SVD：
+    #   torch.linalg.svd 支持 (B,T,3,3) 自动做 batch
+    U, S, Vh = torch.linalg.svd(R)
+
+    # 计算 det(U @ V)
+    det_val = torch.det(U @ Vh)   # (B,T)
+
+    # 构造修正矩阵 diag(1,1,det)
+    D = torch.ones((B, T, 3), device=R.device, dtype=R.dtype)
+    D[:, :, 2] = det_val
+    D = torch.diag_embed(D)       # (B,T,3,3)
+
+    # R_proj = U @ D @ Vh
+    R_proj = U @ D @ Vh
+
+    return R_proj
+
+
 def absolute_rot_to_relative(rot_seq, action_type, J=24, order='xyz'):
     """
     rot_seq: (T, J*dim) 或 (T, J, dim)
@@ -481,6 +519,10 @@ def convert_q(hand_model, q: torch.Tensor, output_q_type):
             joint_rot = R_to_rotvec_torch(joint_matrix)  # (N,3)
         elif output_q_type == 'rot_euler':
             joint_rot = torch.from_numpy(joint_rotation.as_euler('xyz')).to(q.device)
+        elif output_q_type == "rot_mat":
+            # raw_rot_mat shape: (3,3)
+            joint_rot = joint_matrix.reshape(N, 9)
+
         else:
             raise NotImplementedError(f"Unknown action_type: {output_q_type}")
 
@@ -521,6 +563,11 @@ def projection_q(hand_model, q: torch.Tensor, input_q_type):
             rot = R.from_rotvec(q_slice)
         elif input_q_type == 'rot_euler':
             rot = R.from_euler('xyz', q_slice)
+        # ★★★ 新增 rot_mat 支持：q_slice 是 (N,9) ★★★
+        elif input_q_type == 'rot_mat':
+            assert K == 9, f"rot_mat expects 9-dim per joint, but got K={K}"
+            rot_mat = q_slice.reshape(N, 3, 3)  # (N,3,3)
+            rot = R.from_matrix(rot_mat)
         else:
             raise NotImplementedError(f"Unknown action_type: {input_q_type}")
         joint_matrices[joint_name] = rot.as_matrix()
@@ -711,8 +758,93 @@ def decode_rotations_to_R(rot_tensor, action_type, J=24, order='xyz'):
         # 仅示例 intrinsic 'xyz'
         assert order.lower() == 'xyz'
         R = euler_xyz_to_R(x)                  # 你的实现应支持任意前缀形状
-
+    elif action_type == 'rot_mat':
+        # 这里假设每个关节是 3x3 展平：dim 应该是 9
+        assert dim == 9, f"rot_mat expects dim=9 per joint, got dim={dim}"
+        # x: (B, T, J, 9) → R: (B, T, J, 3, 3)
+        R = x.view(B, T, J, 3, 3)
     else:
         raise ValueError(f"Unsupported action_type: {action_type}")
 
     return _from_BTJdim(R, flags)
+
+def rotations_to_joint_angles(rot_tensor: torch.Tensor,
+                              action_type: str,
+                              hand_model,
+                              J: int = 24) -> torch.Tensor:
+    """
+    rot_tensor: (B,T, J*dim) 或 (B,T,J,dim)，和 decode_rotations_to_R 一样的输入形式
+    action_type: 'rot_6d' / 'rot_vec' / 'rot_quat' / 'rot_euler'
+    hand_model: HandModel 实例，用于读 joint_axes 和 joint_limits
+    返回:
+        q_real: (B, T, J)，每个关节的真实角度（弧度）
+    """
+    # 1) 先转成每个关节的旋转矩阵
+    R = decode_rotations_to_R(rot_tensor, action_type, J=J)  # (B,T,J,3,3)
+    B, T, J, _, _ = R.shape
+
+    # 2) 计算每个关节的旋转向量 r_j
+    r = so3_log(R)  # (B,T,J,3)
+
+    # 3) 构造关节轴列表（与 q 的顺序一致）
+    #    这里假设 pk_chain.get_joint_parameter_names() 正好是 24 个 DOF 的顺序
+    joint_names = hand_model.pk_chain.get_joint_parameter_names()  # 长度 J
+    axis_list = []
+    for name in joint_names:
+        # HandModel.joint_axes 里存的是每个 revolute 关节的轴向量
+        axis = hand_model.joint_axes[name]  # (3,) tensor
+        axis = axis / (axis.norm() + 1e-8)
+        axis_list.append(axis)
+    axes = torch.stack(axis_list, dim=0)  # (J,3)
+    axes = axes.to(r.device)
+    axes = axes.view(1, 1, J, 3)          # (1,1,J,3) 方便广播
+
+    # 4) 投影：q_j ≈ r_j · a_j
+    q = (r * axes).sum(dim=-1)  # (B,T,J)
+
+    # 5) clamp 到关节极限
+    lower, upper = hand_model.get_joint_limits()  # (J,), (J,)
+    lower = lower.view(1, 1, J).to(q.device)
+    upper = upper.view(1, 1, J).to(q.device)
+    q = torch.clamp(q, lower, upper)
+
+    return q  # (B,T,J)
+
+def so3_log(R: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """
+    R: (..., 3, 3)
+    返回: (..., 3) 旋转向量 r，方向=轴，模长=角度
+    """
+    # 1) 角度
+    trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+    cos_theta = (trace - 1.0) / 2.0
+    cos_theta = torch.clamp(cos_theta, -1.0 + 1e-7, 1.0 - 1e-7)
+    theta = torch.acos(cos_theta)  # (...,)
+
+    # 2) 轴：vee(R - R^T) / (2 sinθ)
+    v = torch.stack([
+        R[..., 2, 1] - R[..., 1, 2],
+        R[..., 0, 2] - R[..., 2, 0],
+        R[..., 1, 0] - R[..., 0, 1],
+    ], dim=-1)  # (..., 3)
+
+    sin_theta = torch.sin(theta)[..., None]  # (...,1)
+
+    # 避免除 0
+    denom = 2.0 * sin_theta
+    denom_safe = torch.where(
+        denom.abs() < eps,
+        torch.ones_like(denom),  # 先占位，后面用 small-angle 近似替代
+        denom
+    )
+    axis = v / denom_safe  # (...,3)
+
+    # 旋转向量 r = theta * axis
+    r = axis * theta[..., None]  # (...,3)
+
+    # 对于小角度，用一阶近似 r ≈ 0.5 * vee(R - R^T)
+    small = (theta.abs() < eps)[..., None]  # (...,1)
+    r_approx = 0.5 * v
+    r = torch.where(small, r_approx, r)
+
+    return r

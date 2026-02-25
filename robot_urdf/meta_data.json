@@ -6,5 +6,8 @@
     "removed_links": {
         "shadowhand": ["forearm", "wrist", "ffknuckle", "mfknuckle", "rfknuckle", "lfknuckle", "thbase"],
         "leaphand": []
+    },
+    "tip_links": {
+        "shadowhand": ["fftip", "mftip", "rftip", "lftip", "thtip"]
     }
 }

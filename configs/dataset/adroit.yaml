@@ -2,8 +2,8 @@ defaults:
   - adroit_pen.yaml
   - _self_
 
-num_demos: 25
-action_type: 'rot_6d'  # ['joint_value', 'rot_quat', 'rot_6d', 'rot_vec', 'rot_euler']
+num_demos: 15
+action_type: 'rot_mat'  # ['joint_value', 'rot_quat', 'rot_6d', 'rot_vec', 'rot_euler','rot_mat']
 obs_horizon: ${model.obs_horizon}
 pred_horizon: ${model.pred_horizon}
 

@@ -4,12 +4,12 @@ defaults:
   - dataset: adroit.yaml
   - _self_
 
-name: 'fdp_pen25_rot6d_hybrid_sample_ema_taskloss0.1_warmup'
+name: 'fdp_pen15_rotmat_hybrid_sample_seed2025'
 
-seed: 42
+seed: 2025
 gpu:
-#  - 0
-  - 1
+  - 0
+# - 1
 #  - 2
 #  - 3
 #  - 4
@@ -21,26 +21,26 @@ load_from_checkpoint: False
 log_every_n_steps: 100
 
 training:
-  total_iters: 30000  #降低总训练次数
+  total_iters: 5000  #降低总训练次数
   action_mode: absolute        # 新增：relative | absolute
   lambda_geo : 0.1
   loss_mode: hybrid    # 或 geo_only,mse,hybrid
   save_dir: '${output_dir}/state_dict'
   save_every_n_epoch: 5000
-  val_every_n_epoch: 1000   #增加eval频率
+  val_every_n_epoch: 500   #增加eval频率
   ema_decay: 0.995
-  use_ema: True            # 是否启用 EMA
-  use_ema_for_eval: True   # 验证/测试/采样是否用 EMA 模型
+  use_ema: False            # 是否启用 EMA
+  use_ema_for_eval: False   # 验证/测试/采样是否用 EMA 模型
   ema_warmup_steps: 0      # 可选：EMA 线性预热步数，0 表示不用
   lr: 1e-4
   betas: [0.95, 0.999]
   weight_decay: 1e-6
-  lambda_task: 0.1              # <—— 新增：任务损失权重,置零即为关闭
+  lambda_task: 0             # <—— 新增：任务损失权重,置零即为关闭
   lambda_task_warmup_steps: 5000
   action_stats_path: null     # 若有离线统计文件 e.g. 'action_stats.pt'
   task_loss:
     type: smooth                # smooth | l2 | fingertip_pos
     only_rot_segment: true      # 只对旋转段施加任务损失（可选）
     # 仅 fingertip_pos 需要：
-    # t_start: 0
-    # t_end: 10
+    t_start: 0
+    t_end: 10

@@ -26,6 +26,8 @@ def eval_policy(cfg, eval_times, device, ckpt_name, ckpt_state_dict):
         act_horizon=cfg.model.act_horizon,
         device=device,
         render_mode="rgb_array",
+        action_mode=cfg.training.action_mode,  # 新增
+
     )
 
     module = TrainingModule.load_from_checkpoint(
