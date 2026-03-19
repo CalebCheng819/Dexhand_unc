@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "description": "Rot6D recovery plan: use proven architecture/training settings and evaluate best checkpoint first.",
+  "runtime": {
+    "output_root": "/data/caleb/dexhand_output",
+    "export_root": "/data2/caleb/dro_ckpt_final_q_eval",
+    "gpu_ids": [1, 2, 3, 4],
+    "train_python": "/home/caleb/miniconda3/envs/dexhand/bin/python",
+    "export_python": "/home/caleb/miniconda3/envs/dexhand/bin/python",
+    "isaac_python": "/data2/caleb/conda_envs/dro_ig_py38/bin/python",
+    "threads_per_proc": 4,
+    "isaac_chunk": 64,
+    "isaac_retries": 2,
+    "robust_min_grasps": 500,
+    "wandb_mode": "disabled",
+    "q_dof_mismatch": "tail",
+    "ckpt_priority": "best_val.ckpt last.ckpt"
+  },
+  "experiment": {
+    "base_prefix": "rot6d_success",
+    "action": "rot_6d",
+    "common_train": {
+      "loss_mode": "hybrid",
+      "obs_hand_points_source": "full_hand",
+      "hand_num_points": 512,
+      "use_contact_heatmap": true,
+      "object_encoder": "pointnet",
+      "traj_interp": "static_pose",
+      "obs_dim": 91,
+      "obs_horizon": 1,
+      "act_horizon": 1,
+      "pred_horizon": 1,
+      "num_workers": 4,
+      "scheduler_clip_sample": false,
+      "joint_attn": true,
+      "use_ema": true,
+      "use_ema_for_eval": true,
+      "early_stop_enable": true,
+      "early_stop_patience": 12,
+      "early_stop_min_delta": "1e-4",
+      "grad_clip_val": 1.0,
+      "val_every": 2,
+      "save_every": 2,
+      "save_weights_only": true,
+      "enable_validation": true
+    }
+  },
+  "stages": [
+    {
+      "name": "s1_recover",
+      "epochs": 100,
+      "seeds": [2025],
+      "target_success_percent": 12.0
+    },
+    {
+      "name": "s2_boost",
+      "epochs": 140,
+      "seeds": [2025, 2026],
+      "target_success_percent": 18.0
+    }
+  ]
+}

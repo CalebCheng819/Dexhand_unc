@@ -1,0 +1,57 @@
+task_type: dexgrasp
+
+dro_root: '/home/caleb/Dexhand_unc/DRO-Grasp'
+
+robot_names:
+  - shadowhand
+
+num_joints: 24
+env_act_dim: 6
+# handling DRO metadata q size mismatch vs local hand model dof:
+# - tail: keep last num_joints dims (recommended for shadowhand 30->24)
+# - head: keep first num_joints dims
+# - strict: raise error
+q_dof_mismatch: tail
+
+action_type: rot_6d
+action_mode: relative
+
+obs_horizon: ${model.obs_horizon}
+pred_horizon: ${model.pred_horizon}
+
+obs_dim: 91
+# populated at runtime by action_schema (must be predeclared for hydra struct mode)
+act_dim: 0
+rot_dim: 0
+rot_act_dim: 0
+
+batch_size: 64
+eval_batch_size: 64
+num_workers: 4
+drop_last: True
+
+pc_sampling:
+  mode: random_per_call
+  randomize_train_only: true
+  seed: 2025
+  num_points: 512
+  cache_path: '/home/caleb/Dexhand_unc/data/cache'
+  augmentation:
+    enable_train: true
+    jitter_std: 0.002
+    jitter_clip: 0.01
+    dropout_ratio: 0.05
+    rotate_deg: 5.0
+
+trajectory:
+  interp: linear
+
+observation:
+  encoder: stats
+  hand_points_source: full_hand
+  hand_num_points: 512
+  use_contact_heatmap: true
+  object_encoder: pointnet
+  fps_k: 40
+  topk_k: 20
+  pointnet_out_dim: 64

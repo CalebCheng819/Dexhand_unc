@@ -1,0 +1,13 @@
+defaults:
+  - model: dexbench_diffusion.yaml
+  - dataset: dexbench_hdf5.yaml
+  - _self_
+
+seed: 2025
+gpu: 0
+
+checkpoint_path: ''
+
+eval:
+  output_dir: ''
+  max_batches: null

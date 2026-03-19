@@ -1,0 +1,101 @@
+defaults:
+  - log.yaml
+  - model: diffusion_dexgrasp.yaml
+  - dataset: dexgrasp.yaml
+  - _self_
+
+name: 'dexgrasp_rot6d_relative_fix_ep1000_eval100'
+
+seed: 2025
+gpu:
+  - 0
+
+log_every_n_steps: 50
+
+training:
+  total_iters: 1000
+  action_mode: ${dataset.action_mode}
+  resume_ckpt_path: null
+  resume_mode: auto
+
+  save_dir: '${output_dir}/state_dict'
+  save_every_n_epoch: 100
+  save_weights_only: true
+  val_every_n_epoch: 100
+  enable_validation: true
+
+  use_ema: true
+  use_ema_for_eval: true
+  ema_decay: 0.998
+  ema_warmup_steps: 100
+
+  lr: 5e-5
+  betas: [0.95, 0.999]
+  weight_decay: 1e-4
+
+  lambda_geo: 0.1
+  loss_mode: hybrid
+
+  lambda_task: 0.0
+  lambda_task_warmup_steps: 0
+  debug_shapes: false
+  action_stats_path: null
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: norm
+  isaac_small_eval:
+    enable: true
+    every_n_epochs: 100
+    export_python: /home/caleb/miniconda3/envs/dexhand/bin/python
+    isaac_python: /data2/caleb/conda_envs/dro_ig_py38/bin/python
+    isaac_gpu: 0
+    export_device: cuda:0
+    split: validate
+    max_batches: -1
+    max_samples: -1
+    max_groups: 3
+    full_eval_every_n_epochs: 200
+    full_max_groups: 10
+    chunk_size: 64
+    q_dof_mismatch: tail
+    disable_cache: true
+    stochastic: false
+    use_ema_for_eval: true
+    inference_seed: ${seed}
+  isaac_feedback:
+    enable: false
+    every_n_epochs: 50
+    candidates_k: 8
+    objects:
+      - contactdb+camera
+      - contactdb+cylinder_medium
+      - contactdb+apple
+      - contactdb+door_knob
+      - contactdb+water_bottle
+      - ycb+tomato_soup_can
+    split: train
+    max_samples_per_object: 256
+    cache_dir: ${output_dir}/isaac_feedback_cache
+    export_device: cuda:0
+    q_dof_mismatch: tail
+  early_stopping:
+    enable: false
+    monitor: val_isaac_success_rate_small
+    mode: max
+    patience: 40
+    min_delta: 0.0
+  task_loss:
+    type: smooth
+    only_rot_segment: true
+    t_start: 0
+    t_end: ${model.pred_horizon}
+    lambda_contact: 0.05
+    lambda_penetration: 0.05
+    lambda_rank: 0.10
+
+eval:
+  offline:
+    use_get_action: true
+  rerank:
+    enable: false
+    num_candidates: 8
+    score_weights: [0.7, 0.3]

@@ -1,0 +1,25 @@
+defaults:
+  - model: diffusion_dexgrasp.yaml
+  - dataset: dexgrasp.yaml
+  - _self_
+
+seed: 2025
+gpu: 0
+
+checkpoint_path: ''
+
+training:
+  task_loss:
+    t_end: null
+
+eval:
+  output_dir: ''
+  max_batches: null
+  offline:
+    use_get_action: true
+  metrics:
+    - action_mse
+    - rot_geodesic_deg_mean
+    - final_step_rot_geodesic_deg
+    - final_step_q_l1
+    - smoothness_l2

@@ -1,0 +1,21 @@
+defaults:
+  - model: dexbench_diffusion.yaml
+  - dataset: dexbench_hdf5.yaml
+  - _self_
+
+seed: 2025
+checkpoint_path: ""
+train_cfg_path: ""
+
+task: DexbenchLite-Relocate-FloatingShadowRight-v0
+num_envs: 1
+num_episodes: 100
+max_episode_steps: 600
+headless: true
+device: cuda:0
+disable_fabric: false
+exclude_success_within_steps: 1
+report_episode_lists: false
+
+eval:
+  output_dir: /data2/caleb/dexbench_eval_runs/online

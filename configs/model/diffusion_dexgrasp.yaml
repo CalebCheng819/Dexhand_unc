@@ -1,0 +1,16 @@
+obs_horizon: 1
+act_horizon: 1
+pred_horizon: 16
+
+diffusion_prediction_type: sample
+scheduler_clip_sample: False
+num_diffusion_iters: 100
+diffusion_step_embed_dim: 64
+unet_dims: [128, 256, 512]
+hier_num_levels: 1
+hier_context_mode: parent_only
+
+joint_attn: true
+joint_attn_d_model: 256
+joint_attn_n_heads: 8
+joint_attn_n_layers: 4

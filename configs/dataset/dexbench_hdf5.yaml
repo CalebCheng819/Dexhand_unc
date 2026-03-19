@@ -1,0 +1,36 @@
+task_type: dexbench
+
+hdf5_path: '/home/caleb/Dexhand_unc/dexbench_lite/dexbench_lite/relocate_no_conflict_augmented.hdf5'
+action_key: 'processed_actions'
+
+obs_components:
+  - obs/actions
+  - obs/object_pos_b
+  - obs/object_state_robot_b
+  - obs/joint_pos
+  - obs/joint_vel
+  - obs/hand_tips_state_b
+  - obs/contact
+  - goal_pose
+normalize_obs: true
+obs_stats_path: ''
+obs_stats_std_floor: 1.0e-6
+
+# raw action in file is 28 = [3 trans, 3 rot, 22 finger]
+raw_act_dim: 28
+rotation_indices: [3, 4, 5]
+
+action_type: rot_euler
+rot_dim: 3
+env_act_dim: 25
+act_dim: 28
+
+obs_horizon: ${model.obs_horizon}
+pred_horizon: ${model.pred_horizon}
+obs_dim: 210
+
+split_ratio: 0.9
+batch_size: 128
+eval_batch_size: 128
+num_workers: 0
+drop_last: True

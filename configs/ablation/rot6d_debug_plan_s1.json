@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "description": "Single-stage rot_6d debug run (s1).",
+  "runtime": {
+    "output_root": "/data/caleb/dexhand_output",
+    "export_root": "/data2/caleb/dro_ckpt_final_q_eval",
+    "gpu_ids": [1, 2, 3, 4],
+    "train_python": "/home/caleb/miniconda3/envs/dexhand/bin/python",
+    "export_python": "/home/caleb/miniconda3/envs/dexhand/bin/python",
+    "isaac_python": "/data2/caleb/conda_envs/dro_ig_py38/bin/python",
+    "threads_per_proc": 4,
+    "isaac_chunk": 64,
+    "isaac_retries": 2,
+    "robust_min_grasps": 500,
+    "wandb_mode": "disabled",
+    "q_dof_mismatch": "tail"
+  },
+  "experiment": {
+    "base_prefix": "rot6d_debug",
+    "action": "rot_6d",
+    "common_train": {
+      "loss_mode": "mse",
+      "obs_hand_points_source": "full_hand",
+      "hand_num_points": 512,
+      "use_contact_heatmap": false,
+      "object_encoder": "stats",
+      "traj_interp": "linear",
+      "obs_dim": 64,
+      "obs_horizon": 2,
+      "act_horizon": 8,
+      "pred_horizon": 16,
+      "num_workers": 0,
+      "scheduler_clip_sample": true,
+      "joint_attn": false,
+      "use_ema": false,
+      "use_ema_for_eval": false,
+      "val_every": 5,
+      "save_every": 20,
+      "save_weights_only": true,
+      "enable_validation": true
+    }
+  },
+  "stages": [
+    {
+      "name": "s1_debug",
+      "epochs": 60,
+      "seeds": [2025],
+      "target_success_percent": 12.0
+    }
+  ]
+}
